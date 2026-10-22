@@ -1,68 +1,176 @@
+
+"""Manage campus parking permits and zone inspections."""
+
 import json
 import random
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
 
-# Global state
-permits = {}
-ZONES = ["A", "B", "C"]
+PERMITS: dict[str, dict[str, str]] = {}
+ZONES = {"A", "B", "C"}
+DEFAULT_DATABASE = Path("permits.json")
 
-def register_permit(vehicle_plate, zone_id, zone_records=[]):
-    try:
-        permit_no = "P" + str(random.randint(10000, 99999))
-        expiry = datetime.now() + timedelta(days=180)
-        permits[vehicle_plate] = {"zone": zone_id, "permit": permit_no, "expiry": expiry.strftime("%Y-%m-%d")}
-        zone_records.append((vehicle_plate, zone_id))
-        return permit_no
-    except:
+
+def register_permit(
+    vehicle_plate: str,
+    zone_id: str,
+    zone_records: list[tuple[str, str]] | None = None,
+) -> str | None:
+    """Register a valid vehicle for a parking zone."""
+    if not isinstance(vehicle_plate, str) or not vehicle_plate.strip():
+        print("Error: vehicle plate cannot be empty.")
         return None
 
-def revoke_permit(vehicle_plate):
-    try:
-        del permits[vehicle_plate]
-    except:
-        pass
+    if not isinstance(zone_id, str) or zone_id not in ZONES:
+        print(f"Error: invalid zone. Choose from {sorted(ZONES)}.")
+        return None
 
-def is_expired(vehicle_plate):
+    if zone_records is None:
+        zone_records = []
+
+    permit_number = f"P{random.randint(10000, 99999)}"
+    expiry_date = datetime.now() + timedelta(days=180)
+
+    PERMITS[vehicle_plate] = {
+        "zone": zone_id,
+        "permit": permit_number,
+        "expiry": expiry_date.strftime("%Y-%m-%d"),
+    }
+    zone_records.append((vehicle_plate, zone_id))
+
+    return permit_number
+
+
+def revoke_permit(vehicle_plate: str) -> bool:
+    """Revoke a permit if it exists."""
+    return PERMITS.pop(vehicle_plate, None) is not None
+
+
+def is_expired(vehicle_plate: str) -> bool:
+    """Check whether a permit has expired."""
+    permit = PERMITS.get(vehicle_plate)
+
+    if permit is None:
+        return True
+
     try:
-        expiry = datetime.strptime(permits[vehicle_plate]["expiry"], "%Y-%m-%d")
-        return expiry < datetime.now()
-    except:
+        expiry_date = datetime.strptime(
+            permit["expiry"], "%Y-%m-%d"
+        ).date()
+    except (KeyError, ValueError):
+        print(f"Error: invalid expiry date for {vehicle_plate}.")
+        return True
+
+    return expiry_date < datetime.now().date()
+
+
+def scan_zone(zone_id: str, plates_seen: list[str]) -> list[str]:
+    """Return vehicles that should not be parked in the given zone."""
+    if zone_id not in ZONES:
+        raise ValueError(f"Invalid zone: {zone_id}")
+
+    flagged_plates = []
+
+    for plate in plates_seen:
+        permit = PERMITS.get(plate)
+
+        if (
+            permit is None
+            or permit["zone"] != zone_id
+            or is_expired(plate)
+        ):
+            flagged_plates.append(plate)
+
+    return flagged_plates
+
+
+def load_permit_database(
+    file: str | Path = DEFAULT_DATABASE,
+) -> bool:
+    """Load permits from a JSON database."""
+    global PERMITS
+
+    try:
+        with open(file, "r", encoding="utf-8") as permit_file:
+            loaded_permits: Any = json.load(permit_file)
+    except FileNotFoundError:
+        PERMITS = {}
+        return True
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"Error loading permit database: {error}")
         return False
 
-def scan_zone(zone_id, plates_seen):
-    flagged = []
-    for p in plates_seen:
-        if p not in permits or permits[p]["zone"] != zone_id or is_expired(p):
-            flagged.append(p)
-    return flagged
+    if not isinstance(loaded_permits, dict):
+        print("Error: permit database must contain a JSON object.")
+        return False
 
-def load_permit_database(file="permits.json"):
-    global permits
+    PERMITS = loaded_permits
+    return True
+
+
+def save_permit_database(
+    file: str | Path = DEFAULT_DATABASE,
+) -> bool:
+    """Save permits to a JSON database."""
     try:
-        permits = json.load(open(file))
-    except:
-        permits = {}
+        with open(file, "w", encoding="utf-8") as permit_file:
+            json.dump(PERMITS, permit_file, indent=4)
+    except OSError as error:
+        print(f"Error saving permit database: {error}")
+        return False
 
-def save_permit_database(file="permits.json"):
-    f = open(file, "w")
-    json.dump(permits, f)
-    f.close()
+    return True
 
-def setExpiry(vehicle_plate, date_text):
-    permits[vehicle_plate]["expiry"] = date_text
 
-def main():
-    load_permit_database()
+def set_expiry(vehicle_plate: str, date_text: str) -> bool:
+    """Set a permit expiry date using YYYY-MM-DD."""
+    permit = PERMITS.get(vehicle_plate)
+
+    if permit is None:
+        print(f"Error: no permit found for {vehicle_plate}.")
+        return False
+
+    try:
+        expiry_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+    except ValueError:
+        print("Error: date must use YYYY-MM-DD format.")
+        return False
+
+    permit["expiry"] = expiry_date.isoformat()
+    return True
+
+
+def main() -> None:
+    """Run a demonstration of the parking permit manager."""
+    if not load_permit_database():
+        print("Continuing with the in-memory permit data.")
+
     register_permit("KA01AB1234", "A")
-    register_permit("KA05XY9999", "Z")
-    register_permit("", "B")
-    register_permit(None, "C")
-    setExpiry("KA01AB1234", "01/01/2020")
-    revoke_permit("MH12ZZ0000")
-    print("Flagged in zone A:", scan_zone("A", ["KA01AB1234", "KA05XY9999", "TN09QQ1111"]))
-    plate = input("Plate to revoke (Enter to skip): ")
-    revoke_permit(plate)
-    save_permit_database()
-    print("Permits on file:", len(permits))
+    register_permit("KA05XY9999", "Z")  # Intentionally invalid test.
+    register_permit("", "B")  # Intentionally invalid test.
 
-main()
+    set_expiry("KA01AB1234", "2020-01-01")
+
+    revoke_permit("MH12ZZ0000")
+
+    print(
+        "Flagged in zone A:",
+        scan_zone(
+            "A",
+            ["KA01AB1234", "KA05XY9999", "TN09QQ1111"],
+        ),
+    )
+
+    plate = input("Plate to revoke (Enter to skip): ").strip()
+    if plate and not revoke_permit(plate):
+        print(f"No permit found for {plate}.")
+
+    if save_permit_database():
+        print("Permit database saved successfully.")
+
+    print("Permits on file:", len(PERMITS))
+
+
+if __name__ == "__main__":
+    main()
